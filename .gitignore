@@ -144,3 +144,56 @@ ipch/
 
 # Visual Studio Trace Files
 *.e2e
+# ----------------------------------------------------------------------
+# build directories
+# ----------------------------------------------------------------------
+# standard build folder
+build/
+# clion/cmake specific folders
+cmake-build-*/
+
+# ----------------------------------------------------------------------
+# cmake generated files (if you build in the root directory)
+# ----------------------------------------------------------------------
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CPackConfig.cmake
+CPackSourceConfig.cmake
+# ignore all cmake scripts...
+*.cmake
+# ...except the main one
+!CMakeLists.txt
+
+# ----------------------------------------------------------------------
+# compiled binaries and libraries
+# ----------------------------------------------------------------------
+# object files
+*.o
+# static libraries
+*.a
+# shared libraries
+*.so
+*.dylib
+*.dll
+# windows executables
+*.exe
+
+# ----------------------------------------------------------------------
+# project specific executables (from CMakeLists.txt)
+# ----------------------------------------------------------------------
+init_core
+pub
+sub
+
+# ----------------------------------------------------------------------
+# editor and system files
+# ----------------------------------------------------------------------
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
