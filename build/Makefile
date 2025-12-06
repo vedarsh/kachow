@@ -129,6 +129,58 @@ usrl_core/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/usrl_core.dir/build.make CMakeFiles/usrl_core.dir/build
 .PHONY : usrl_core/fast
 
+#=============================================================================
+# Target rules for targets named init_bench
+
+# Build rule for target.
+init_bench: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 init_bench
+.PHONY : init_bench
+
+# fast build rule for target.
+init_bench/fast:
+	$(MAKE) $(MAKESILENT) -f benchmarks/CMakeFiles/init_bench.dir/build.make benchmarks/CMakeFiles/init_bench.dir/build
+.PHONY : init_bench/fast
+
+#=============================================================================
+# Target rules for targets named bench_pub_swmr
+
+# Build rule for target.
+bench_pub_swmr: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 bench_pub_swmr
+.PHONY : bench_pub_swmr
+
+# fast build rule for target.
+bench_pub_swmr/fast:
+	$(MAKE) $(MAKESILENT) -f benchmarks/CMakeFiles/bench_pub_swmr.dir/build.make benchmarks/CMakeFiles/bench_pub_swmr.dir/build
+.PHONY : bench_pub_swmr/fast
+
+#=============================================================================
+# Target rules for targets named bench_pub_mwmr
+
+# Build rule for target.
+bench_pub_mwmr: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 bench_pub_mwmr
+.PHONY : bench_pub_mwmr
+
+# fast build rule for target.
+bench_pub_mwmr/fast:
+	$(MAKE) $(MAKESILENT) -f benchmarks/CMakeFiles/bench_pub_mwmr.dir/build.make benchmarks/CMakeFiles/bench_pub_mwmr.dir/build
+.PHONY : bench_pub_mwmr/fast
+
+#=============================================================================
+# Target rules for targets named bench_sub
+
+# Build rule for target.
+bench_sub: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 bench_sub
+.PHONY : bench_sub
+
+# fast build rule for target.
+bench_sub/fast:
+	$(MAKE) $(MAKESILENT) -f benchmarks/CMakeFiles/bench_sub.dir/build.make benchmarks/CMakeFiles/bench_sub.dir/build
+.PHONY : bench_sub/fast
+
 core/src/ring_mwmr.o: core/src/ring_mwmr.c.o
 .PHONY : core/src/ring_mwmr.o
 
@@ -209,6 +261,10 @@ help:
 	@echo "... depend"
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
+	@echo "... bench_pub_mwmr"
+	@echo "... bench_pub_swmr"
+	@echo "... bench_sub"
+	@echo "... init_bench"
 	@echo "... usrl_core"
 	@echo "... core/src/ring_mwmr.o"
 	@echo "... core/src/ring_mwmr.i"

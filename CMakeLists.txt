@@ -24,4 +24,4 @@ target_include_directories(usrl_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # --- Add Subdirectories ---
 # Only add these if you want them built with the main lib
 # Otherwise, you can build them independently
-# add_subdirectory(benchmarks)
+add_subdirectory(benchmarks)
