@@ -1,0 +1,21 @@
+{
+  "comment": "USRL System Configuration",
+  "memory_size_mb": 4,
+  "topics": [
+    {
+      "name": "demo",
+      "slots": 1024,
+      "payload_size": 128
+    },
+    {
+      "name": "sensor/imu",
+      "slots": 2048,
+      "payload_size": 64
+    },
+    {
+      "name": "camera/front",
+      "slots": 16,
+      "payload_size": 10240
+    }
+  ]
+}

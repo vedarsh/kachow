@@ -1,7 +1,3 @@
-/* usrl_core.c */
-// code to init the shared memory
-// it makes the file and maps it
-
 #include "usrl_core.h"
 #include <stdio.h>
 #include <string.h>
@@ -11,22 +7,16 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-// defaults if not defined
-#ifndef DEFAULT_PAYLOAD_MAX
-#define DEFAULT_PAYLOAD_MAX 120U
-#endif
-
-#ifndef SLOT_COUNT_VAL
-#define SLOT_COUNT_VAL 1024U
-#endif
-
-// debug printing
-#ifndef DEBUG_PRINT_CORE
+#define DEBUG
+#ifdef DEBUG
 #define DEBUG_PRINT_CORE(...) \
     do { printf("[DEBUG][CORE] " __VA_ARGS__); fflush(stdout); } while (0)
+#else
+#define DEBUG_PRINT_CORE(...) ((void)0)
 #endif
 
-// helper to get next power of 2
+
+// helper for power of two
 static uint32_t next_power_of_two_u32(uint32_t v) {
     if (v == 0) return 1;
     v--;
@@ -38,163 +28,143 @@ static uint32_t next_power_of_two_u32(uint32_t v) {
     return ++v;
 }
 
-int usrl_core_init(const char *path, uint64_t size)
-{
-    DEBUG_PRINT_CORE("INIT start path=%s size=%lu\n", path, size);
 
-    // check if args are bad
-    if (!path || size < 4096) {
-        DEBUG_PRINT_CORE("INIT ERROR: invalid args\n");
+// this is the big update: we iterate through the config list to build the memory
+int usrl_core_init(const char *path, uint64_t size, const UsrlTopicConfig *topics, uint32_t count) {
+    DEBUG_PRINT_CORE("init path=%s size=%lu topics=%u\n", path, size, count);
+
+    if (!path || size < 4096 || !topics || count == 0) {
         return -1;
     }
 
-    // delete old shm if it exists
+    // cleaning up old file
     shm_unlink(path);
 
-    // open the shared memory file
+    // making new file
     int fd = shm_open(path, O_CREAT | O_RDWR | O_EXCL, 0666);
     if (fd < 0) {
-        DEBUG_PRINT_CORE("shm_open failed: %s\n", strerror(errno));
+        DEBUG_PRINT_CORE("shm_open failed\n");
         return -1;
     }
 
-    // set the size of the file
     if (ftruncate(fd, (off_t)size) < 0) {
-        DEBUG_PRINT_CORE("ftruncate failed: %s\n", strerror(errno));
+        DEBUG_PRINT_CORE("ftruncate failed\n");
         close(fd);
         return -2;
     }
 
-    // map it into memory
     void *base = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (base == MAP_FAILED) {
-        DEBUG_PRINT_CORE("mmap failed: %s\n", strerror(errno));
+        DEBUG_PRINT_CORE("mmap failed\n");
         close(fd);
         return -3;
     }
 
-    DEBUG_PRINT_CORE("Mapped core @ %p\n", base);
-
-    // clear the memory
     memset(base, 0, size);
 
-    // set up the main header
+    // setting up global header
     CoreHeader *hdr = (CoreHeader*)base;
     hdr->magic   = USRL_MAGIC;
     hdr->version = 1;
     hdr->mmap_size = size;
 
-    uint64_t off = usrl_align_up(sizeof(CoreHeader), USRL_ALIGNMENT);
-    hdr->topic_table_offset = off;
-    hdr->topic_count        = 1;
+    // topic table starts after the header
+    uint64_t current_offset = usrl_align_up(sizeof(CoreHeader), USRL_ALIGNMENT);
+    hdr->topic_table_offset = current_offset;
+    hdr->topic_count        = count;
 
-    DEBUG_PRINT_CORE("Header set up done\n");
+    // calculating where ring descriptors start (after the whole topic table)
+    uint64_t ring_desc_start = usrl_align_up(
+        current_offset + (sizeof(TopicEntry) * count),
+        USRL_ALIGNMENT
+    );
 
-    // set up the topic entry
-    TopicEntry *t = (TopicEntry*)((uint8_t*)base + hdr->topic_table_offset);
-    memset(t, 0, sizeof(TopicEntry));
-    strncpy(t->name, "demo", USRL_MAX_TOPIC_NAME - 1);
+    // calculating where slots start (after the whole ring descriptor array)
+    uint64_t slots_start = usrl_align_up(
+        ring_desc_start + (sizeof(RingDesc) * count),
+        USRL_ALIGNMENT
+    );
 
-    DEBUG_PRINT_CORE("Topic name set to demo\n");
+    uint64_t next_free_slot_offset = slots_start;
 
-    uint64_t ring_desc_off = usrl_align_up(
-        hdr->topic_table_offset + sizeof(TopicEntry) * hdr->topic_count,
-        USRL_ALIGNMENT);
+    // loop through every topic in the config
+    for (uint32_t i = 0; i < count; ++i) {
+        DEBUG_PRINT_CORE("configuring topic %s\n", topics[i].name);
 
-    t->ring_desc_offset = ring_desc_off;
+        // 1. Fill Topic Entry
+        TopicEntry *t = (TopicEntry*)((uint8_t*)base + hdr->topic_table_offset + (i * sizeof(TopicEntry)));
+        strncpy(t->name, topics[i].name, USRL_MAX_TOPIC_NAME - 1);
 
-    uint32_t slot_count  = next_power_of_two_u32(SLOT_COUNT_VAL);
-    uint32_t payload_max = DEFAULT_PAYLOAD_MAX;
-    uint32_t slot_size   = (uint32_t)usrl_align_up(
-                               sizeof(SlotHeader) + payload_max, 8);
+        // calculate where this topic's ring descriptor lives
+        t->ring_desc_offset = ring_desc_start + (i * sizeof(RingDesc));
 
-    t->slot_count = slot_count;
-    t->slot_size  = slot_size;
+        // math for sizes
+        uint32_t slots_pow2 = next_power_of_two_u32(topics[i].slot_count);
+        uint32_t slot_sz_aligned = (uint32_t)usrl_align_up(sizeof(SlotHeader) + topics[i].slot_size, 8);
 
-    // set up the ring descriptor
-    RingDesc *r = (RingDesc*)((uint8_t*)base + ring_desc_off);
-    r->slot_count = slot_count;
-    r->slot_size  = slot_size;
+        t->slot_count = slots_pow2;
+        t->slot_size  = slot_sz_aligned;
 
-    uint64_t base_off = usrl_align_up(
-        ring_desc_off + sizeof(RingDesc), USRL_ALIGNMENT);
+        // 2. Fill Ring Descriptor
+        RingDesc *r = (RingDesc*)((uint8_t*)base + t->ring_desc_offset);
+        r->slot_count = slots_pow2;
+        r->slot_size  = slot_sz_aligned;
+        r->base_offset = next_free_slot_offset;
+        atomic_store_explicit(&r->w_head, 0, memory_order_relaxed);
 
-    r->base_offset = base_off;
-    atomic_store_explicit(&r->w_head, 0, memory_order_relaxed);
+        // 3. Reserve Slot Memory
+        uint64_t total_bytes_for_topic = (uint64_t)slots_pow2 * slot_sz_aligned;
 
-    DEBUG_PRINT_CORE("Ring descriptor setup done\n");
+        // check if we ran out of memory
+        if (next_free_slot_offset + total_bytes_for_topic > size) {
+            DEBUG_PRINT_CORE("OOM! topic %s needs too much memory\n", topics[i].name);
+            munmap(base, size);
+            close(fd);
+            return -4;
+        }
 
-    uint64_t slots_bytes = (uint64_t)slot_count * slot_size;
+        // init slots
+        uint8_t *slot_ptr = (uint8_t*)base + next_free_slot_offset;
+        // memory is already zeroed by memset above, but let's be explicitly safe for headers
+        for (uint32_t k = 0; k < slots_pow2; ++k) {
+             SlotHeader *sh = (SlotHeader*)(slot_ptr + ((uint64_t)k * slot_sz_aligned));
+             atomic_store_explicit(&sh->seq, 0, memory_order_relaxed);
+        }
 
-    // check if it fits
-    if (r->base_offset + slots_bytes > size) {
-        DEBUG_PRINT_CORE("ERROR: ring too big\n");
-        munmap(base, size);
-        close(fd);
-        return -4;
+        // move the pointer for the next topic
+        next_free_slot_offset += total_bytes_for_topic;
+        next_free_slot_offset = usrl_align_up(next_free_slot_offset, USRL_ALIGNMENT);
     }
 
-    // zero out the slots
-    uint8_t *slots_base = (uint8_t*)base + r->base_offset;
-    memset(slots_base, 0, slots_bytes);
-
-    // init all the slot headers
-    for (uint32_t i = 0; i < slot_count; ++i) {
-        SlotHeader *sh = (SlotHeader*)(slots_base + (uint64_t)i * slot_size);
-        atomic_store_explicit(&sh->seq, 0, memory_order_relaxed);
-        sh->payload_len  = 0;
-        sh->timestamp_ns = 0;
-    }
-
-    DEBUG_PRINT_CORE("Slots initialized\n");
+    DEBUG_PRINT_CORE("used %lu / %lu bytes\n", next_free_slot_offset, size);
 
     munmap(base, size);
     close(fd);
-
-    DEBUG_PRINT_CORE("INIT done OK\n");
     return 0;
 }
 
-void* usrl_core_map(const char *path, uint64_t size)
-{
-    DEBUG_PRINT_CORE("MAP start path=%s size=%lu\n", path, size);
-
-    // open shared mem
+void* usrl_core_map(const char *path, uint64_t size) {
     int fd = shm_open(path, O_RDWR, 0666);
-    if (fd < 0) {
-        DEBUG_PRINT_CORE("MAP shm_open failed\n");
-        return NULL;
-    }
+    if (fd < 0) return NULL;
 
-    // map it
     void *base = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (base == MAP_FAILED) {
-        DEBUG_PRINT_CORE("MAP mmap failed\n");
         close(fd);
         return NULL;
     }
-
     close(fd);
-    DEBUG_PRINT_CORE("Mapped address %p\n", base);
     return base;
 }
 
-TopicEntry* usrl_get_topic(void *base, const char *name)
-{
+TopicEntry* usrl_get_topic(void *base, const char *name) {
     if (!base || !name) return NULL;
-
     CoreHeader *hdr = (CoreHeader*)base;
-    if (hdr->magic != USRL_MAGIC) {
-        return NULL;
-    }
+    if (hdr->magic != USRL_MAGIC) return NULL;
 
     TopicEntry *t = (TopicEntry*)((uint8_t*)base + hdr->topic_table_offset);
-
-    // loop to find the topic
     for (uint32_t i = 0; i < hdr->topic_count; i++) {
         if (strncmp(t[i].name, name, USRL_MAX_TOPIC_NAME) == 0)
             return &t[i];
     }
-
     return NULL;
 }

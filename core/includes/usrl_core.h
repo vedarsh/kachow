@@ -1,24 +1,30 @@
-/* usrl_core.h */
-// this is the main header file for the core
-// i put all the structs here so everyone can see them
-
 #ifndef USRL_CORE_H
 #define USRL_CORE_H
 
 #include <stdint.h>
 #include <stdatomic.h>
 
-// magic number to check if memory is valid
+// magic number to verify the file
 #define USRL_MAGIC         0x5553524C
 #define USRL_MAX_TOPIC_NAME 64
 #define USRL_ALIGNMENT     64
 
-// function to align memory
+
+// helper to align numbers
 static inline uint64_t usrl_align_up(uint64_t v, uint64_t a) {
     return (v + (a - 1)) & ~(a - 1);
 }
 
-// this struct is at the start of the file
+
+// this struct helps us pass config from the json parser to the core
+typedef struct {
+    char name[USRL_MAX_TOPIC_NAME];
+    uint32_t slot_count;
+    uint32_t slot_size;
+} UsrlTopicConfig;
+
+
+// main file header
 typedef struct {
     uint32_t magic;
     uint32_t version;
@@ -28,7 +34,8 @@ typedef struct {
     uint32_t _pad;
 } CoreHeader;
 
-// this holds info about a topic
+
+// entry in the topic table
 typedef struct {
     char     name[USRL_MAX_TOPIC_NAME];
     uint64_t ring_desc_offset;
@@ -36,7 +43,8 @@ typedef struct {
     uint32_t slot_size;
 } TopicEntry;
 
-// header for each slot in the ring
+
+// header for every single message slot
 typedef struct {
     atomic_uint_fast64_t seq;
     uint64_t             timestamp_ns;
@@ -44,10 +52,11 @@ typedef struct {
     uint32_t             _pad;
 } SlotHeader;
 
-// checking size is multiple of 8
+
 #ifndef __cplusplus
-_Static_assert(sizeof(SlotHeader) % 8 == 0, "SlotHeader size bad");
+_Static_assert(sizeof(SlotHeader) % 8 == 0, "header size alignment wrong");
 #endif
+
 
 // descriptor for the ring buffer
 typedef struct {
@@ -58,8 +67,9 @@ typedef struct {
     uint8_t              _pad[32];
 } RingDesc;
 
-// functions to start the core
-int        usrl_core_init(const char *path, uint64_t size);
+
+// new init function that takes a list of topics
+int        usrl_core_init(const char *path, uint64_t size, const UsrlTopicConfig *topics, uint32_t count);
 void*      usrl_core_map(const char *path, uint64_t size);
 TopicEntry* usrl_get_topic(void *base, const char *name);
 
