@@ -40,7 +40,7 @@ This architecture avoids kernel-mediated IPC (sockets, pipes, message queues) an
 ### Prerequisites
 
 - Linux (x86_64 or ARM64)
-- MACOSX (x86_64 or ARM
+- MACOSX (x86_64 or ARM64)
 - CMake 3.16 or newer
 - GCC 9+ or Clang 10+ with C11 support
 - POSIX threads and `librt`
