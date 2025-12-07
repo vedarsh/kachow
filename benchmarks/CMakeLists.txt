@@ -24,10 +24,6 @@ target_link_libraries(bench_tcp_server usrl_net usrl_core)
 
 add_executable(bench_tcp_client bench_tcp_client.c)
 target_link_libraries(bench_tcp_client usrl_net usrl_core)
-# Automatically gets transport/includes from usrl_net target
-# === FIX: Add transport includes for TCP benchmarks ===
-target_include_directories(bench_tcp_server PRIVATE ${CMAKE_SOURCE_DIR}/transport/tcp/includes)
-target_include_directories(bench_tcp_client PRIVATE ${CMAKE_SOURCE_DIR}/transport/tcp/includes)
 
 # Copy the config JSON to the build directory
 configure_file(
