@@ -1,1 +1,0 @@
-/usr/bin/cc -O3 -march=native -Wall -Wextra CMakeFiles/bench_pub_mwmr.dir/bench_pub_mwmr.c.o -o bench_pub_mwmr  ../libusrl_core.a -lrt -latomic 

@@ -1,2 +1,0 @@
-/usr/bin/ar qc libusrl_core.a CMakeFiles/usrl_core.dir/core/src/usrl_core.c.o CMakeFiles/usrl_core.dir/core/src/ring_swmr.c.o CMakeFiles/usrl_core.dir/core/src/ring_mwmr.c.o
-/usr/bin/ranlib libusrl_core.a

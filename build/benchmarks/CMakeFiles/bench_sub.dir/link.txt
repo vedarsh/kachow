@@ -1,1 +1,0 @@
-/usr/bin/cc -O3 -march=native -Wall -Wextra CMakeFiles/bench_sub.dir/bench_sub.c.o -o bench_sub  ../libusrl_core.a -lrt -latomic 
