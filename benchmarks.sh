@@ -1,14 +1,16 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 ###############################################################################
-# Paths
+# Paths & Config
 ###############################################################################
 
 ROOT_DIR="$(pwd)"
 BUILD_DIR="$ROOT_DIR/build"
 BENCH_DIR="$BUILD_DIR/benchmarks"
 SUBLOG="$ROOT_DIR/sub.log"
+TCP_SERVER_PORT=8080
+TCP_TIMEOUT=30
 
 ###############################################################################
 # Colors
@@ -21,94 +23,137 @@ RED='\033[1;31m'
 NC='\033[0m'
 
 ###############################################################################
-# 0. Build Project (Release)
+# Cleanup Function
 ###############################################################################
 
-echo -e "${BLUE}=== Building Project (Release Mode) ===${NC}"
+cleanup() {
+    echo -e "${BLUE}Cleaning up...${NC}"
+    rm -f "$SUBLOG" || true
+    pkill -f bench_tcp_server || true
+    pkill -f bench_tcp_client || true
+    sleep 0.1
+}
+trap cleanup EXIT INT TERM
 
+###############################################################################
+# 0. Build Everything
+###############################################################################
+
+echo -e "${BLUE}=== 0. Building USRL (Release) ===${NC}"
 mkdir -p "$BUILD_DIR"
 pushd "$BUILD_DIR" > /dev/null
-
 cmake -DCMAKE_BUILD_TYPE=Release ..
 make -j"$(nproc)"
-
 popd > /dev/null
 
-
 ###############################################################################
-# 1. Init Core
+# 1. Initialize SHM Core
 ###############################################################################
 
-echo -e "\n${BLUE}=== Initializing Core ===${NC}"
+echo -e "\n${BLUE}=== 1. Initializing SHM Core ===${NC}"
+sudo rm -f /dev/shm/usrl_core || true
 
 pushd "$BENCH_DIR" > /dev/null
-./init_bench
+./init_bench || { echo -e "${RED}init_bench failed!${NC}"; exit 1; }
 popd > /dev/null
 
+ls -lh /dev/shm/usrl_core && echo -e "${GREEN}✓ SHM Core Ready (256MB)${NC}"
 
 ###############################################################################
-# 2. Helper Function
+# 2. SHM Benchmark Helper
 ###############################################################################
 
-run_test() {
-    local NAME="$1"
-    local TOPIC="$2"
-    local TYPE="$3"
-    local WRITERS="$4"
-    local SIZE="$5"
-
-    echo -e "\n${YELLOW}>>> TEST: ${NAME}  (${TYPE}, Writers: ${WRITERS}, Size: ${SIZE})${NC}"
-
-    # Remove old log
+run_shm_test() {
+    local name="$1" topic="$2" type="$3" writers="${4:-1}" size="${5:-64}"
+    
+    echo -e "\n${YELLOW}>>> SHM: $name (${type}, W:$writers, ${size}B) ${NC}"
+    
     rm -f "$SUBLOG"
-
-    # Start subscriber in background writing *directly* to ROOT
+    
+    # Subscriber
     pushd "$BENCH_DIR" > /dev/null
-    ./bench_sub "$TOPIC" > "$SUBLOG" 2>&1 &
-    local SUB_PID=$!
+    ./bench_sub "$topic" > "$SUBLOG" 2>&1 &
+    local sub_pid=$!
     popd > /dev/null
-
-    sleep 0.25  # give subscriber time to start
-
+    
+    sleep 0.2
+    
     # Publisher(s)
     pushd "$BENCH_DIR" > /dev/null
-    if [ "$TYPE" == "SWMR" ]; then
-        ./bench_pub_swmr "$TOPIC" "$SIZE"
+    if [[ "$type" == "SWMR" ]]; then
+        timeout 25s ./bench_pub_swmr "$topic" "$size"
     else
-        ./bench_pub_mwmr "$TOPIC" "$WRITERS" "$SIZE"
+        timeout 25s ./bench_pub_mwmr "$topic" "$writers" "$size"
     fi
     popd > /dev/null
+    
+    sleep 0.2
+    kill "$sub_pid" 2>/dev/null || true
+    
+    echo -e "${GREEN}✓ Subscriber: $(tail -1 "$SUBLOG" 2>/dev/null || echo "No data")${NC}"
+}
 
-    sleep 0.15
+###############################################################################
+# 3. TCP Benchmark Helper - FIXED
+###############################################################################
 
-    kill "$SUB_PID" 2>/dev/null || true
-
-    echo -e "${GREEN}Subscriber Observed Rate:${NC}"
-
-    if grep -q "Rate:" "$SUBLOG"; then
-        grep "Rate:" "$SUBLOG" | tail -n 1
+run_tcp_test() {
+    local name="$1"
+    
+    echo -e "\n${YELLOW}>>> TCP: $name ${NC}"
+    
+    # Start TCP Server (no timeout - let client control)
+    echo -e "${BLUE}[Server] ${NC}./bench_tcp_server $TCP_SERVER_PORT"
+    pushd "$BENCH_DIR" > /dev/null
+    ./bench_tcp_server "$TCP_SERVER_PORT" &
+    local server_pid=$!
+    popd > /dev/null
+    
+    # Wait for server to bind
+    for i in {1..10}; do
+        if nc -z 127.0.0.1 "$TCP_SERVER_PORT" 2>/dev/null; then
+            break
+        fi
+        sleep 0.2
+    done
+    
+    # Run TCP Client
+    echo -e "${BLUE}[Client]${NC} ./bench_tcp_client 127.0.0.1 $TCP_SERVER_PORT"
+    pushd "$BENCH_DIR" > /dev/null
+    timeout "$TCP_TIMEOUT" ./bench_tcp_client "127.0.0.1" "$TCP_SERVER_PORT"
+    local client_rc=$?
+    popd > /dev/null
+    
+    # Cleanup
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+    
+    if [[ $client_rc -eq 0 ]]; then
+        echo -e "${GREEN}✓ TCP Complete${NC}"
     else
-        echo -e "${RED}No subscriber data received${NC}"
+        echo -e "${RED}✗ TCP Failed (rc=$client_rc)${NC}"
     fi
 }
 
-
 ###############################################################################
-# 3. Benchmark Matrix
-###############################################################################
-
-run_test "Baseline (Small Ring)"     "small_ring_swmr"   "SWMR" 1 64
-run_test "Throughput (Large Ring)"   "large_ring_swmr"   "SWMR" 1 64
-run_test "Bandwidth (Huge Msg)"      "huge_msg_swmr"     "SWMR" 1 8192
-
-run_test "MWMR Standard"             "mwmr_std"          "MWMR" 4 64
-run_test "MWMR High Contention"      "mwmr_contention"   "MWMR" 4 64
-
-
-###############################################################################
-# 4. Cleanup
+# 4. Master Benchmark Matrix
 ###############################################################################
 
-rm -f "$SUBLOG"
+echo -e "\n${BLUE}=== SHM BENCHMARKS ===${NC}"
+run_shm_test "Small Ring"        "small_ring_swmr"   "SWMR" 1 64
+run_shm_test "Large Ring"        "large_ring_swmr"   "SWMR" 1 64  
+run_shm_test "Huge Messages"     "huge_msg_swmr"     "SWMR" 1 8192
+run_shm_test "MWMR Standard"     "mwmr_std"          "MWMR" 4 64
+run_shm_test "MWMR Contention"   "mwmr_contention"   "MWMR" 8 64
 
-echo -e "\n${GREEN}All Benchmarks Completed.${NC}"
+echo -e "\n${BLUE}=== TCP BENCHMARKS ===${NC}"
+run_tcp_test "TCP Request/Response"
+
+###############################################################################
+# 5. Summary
+###############################################################################
+
+echo -e "\n${GREEN} BENCHMARK SUITE COMPLETE! ${NC}"
+echo -e "${BLUE} SHM Logs: $SUBLOG${NC}"
+echo -e "${BLUE}🔧 SHM: /dev/shm/usrl_core${NC}"
+ls -lh /dev/shm/usrl_core 2>/dev/null || true

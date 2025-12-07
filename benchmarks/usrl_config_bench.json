@@ -1,12 +1,13 @@
 {
-  "comment": "Comprehensive Benchmark Suite",
-  "memory_size_mb": 128,
+  "memory_size_mb": 512,
   "topics": [
-    { "name": "small_ring_swmr", "slots": 128,   "payload_size": 64,  "type": "swmr" },
-    { "name": "large_ring_swmr", "slots": 16384, "payload_size": 64,  "type": "swmr" },
-    { "name": "huge_msg_swmr",   "slots": 1024,  "payload_size": 8192,"type": "swmr" },
-
-    { "name": "mwmr_std",        "slots": 8192,  "payload_size": 64,  "type": "mwmr" },
-    { "name": "mwmr_contention", "slots": 128,   "payload_size": 64,  "type": "mwmr" }
+    { "name": "small_ring_swmr", "slots": 128, "payload_size": 64, "type": "swmr" },
+    { "name": "large_ring_swmr", "slots": 16384, "payload_size": 64, "type": "swmr" },
+    { "name": "huge_msg_swmr", "slots": 1024, "payload_size": 8192, "type": "swmr" },
+    { "name": "mwmr_std", "slots": 8192, "payload_size": 64, "type": "mwmr" },
+    { "name": "mwmr_contention", "slots": 128, "payload_size": 64, "type": "mwmr" },
+    
+    { "name": "tcp_requests", "slots": 4096, "payload_size": 4096, "type": "swmr" },
+    { "name": "tcp_responses", "slots": 4096, "payload_size": 4096, "type": "swmr" }
   ]
 }
