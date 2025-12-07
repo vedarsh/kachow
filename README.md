@@ -46,3 +46,5 @@ This architecture avoids kernel-mediated IPC (sockets, pipes, message queues) an
 
 ### Build Steps
 
+For Build check out `USRL_Documentation.md`.
+To run Benchmarks run `./benchmarks.sh`
