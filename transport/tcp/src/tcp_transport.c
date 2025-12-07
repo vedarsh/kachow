@@ -21,12 +21,6 @@
 /* --------------------------------------------------------------------------
  * Helpers
  * -------------------------------------------------------------------------- */
-static int set_blocking(int fd) {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags == -1) return -1;
-    return fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-}
-
 static void set_tcp_nodelay(int fd) {
     int opt = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
