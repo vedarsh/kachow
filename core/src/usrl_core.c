@@ -1,3 +1,13 @@
+
+#include "usrl_core.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 /**
  * @file usrl_core.c
  * @brief Core routines for creating and mapping the USRL shared memory region.

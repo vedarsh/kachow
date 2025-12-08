@@ -288,7 +288,7 @@ int usrl_pub_init(
 **Example:**
 ```c
 UsrlPublisher pub;
-usrl_pub_init(&pub, core, "sensor_imu", 100);
+usrl_pub_init(&pub, core, "sensor_imu", 1);
 ```
 
 #### `usrl_pub_publish()`
@@ -992,6 +992,185 @@ For questions or contributions, refer to the inline code documentation in `core/
 
 ---
 
-**Document Version:** 1.0  
-**Last Updated:** December 2025  
-**License:** Open Source (Check repository for details)
+## Remote Developer Quick Start — Get Productive in 10 Minutes
+
+This section focuses on what a remote developer or contributor needs to know to get up-and-running immediately with the USRL repository from a remote machine or dev container.
+
+Prerequisites (Remote Dev)
+- POSIX-compatible OS (Linux recommended). This repo is developed/tested on x86_64 and aarch64.
+- Git access (SSH or HTTPS) to the repository.
+- Build toolchain: C compiler (GCC/Clang with C11), CMake, make.
+- Access to container or VM if you prefer reproducible dev environment.
+
+Clone repository (SSH)
+```bash
+git clone git@github.com:your-org/usrl-core.git ~/projects/usrl-core
+cd ~/projects/usrl-core
+```
+
+Clone repository (HTTPS)
+```bash
+git clone https://github.com/your-org/usrl-core.git ~/projects/usrl-core
+cd ~/projects/usrl-core
+```
+
+Dev Container (Alpine Linux v3.23) — quick setup
+- The project CI/devcontainer uses Alpine. Use these commands inside the Alpine dev container to prepare environment.
+
+Install build essentials on Alpine:
+```sh
+# inside container
+apk update
+apk add --no-cache build-base cmake git bash cmake make file musl-dev linux-headers
+# Optional helpful tools (available on PATH per workspace instructions):
+apk add --no-cache curl util-linux
+```
+
+Notes on Alpine differences:
+- glibc-specific tooling may behave differently; the project is tested under musl in CI and with glibc on CI images too.
+- If you need glibc compatibility, consider running an Ubuntu-based container or use an image with glibc.
+
+Build (From repo root)
+```bash
+mkdir -p build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j$(nproc)
+```
+Expected artifacts in build/:
+- libusrl_core.a or shared libs
+- bin/init_core
+- bin/pub, bin/sub demo apps
+- bench/bench_pub_* utilities
+
+Map & Run (local quick test)
+1. Initialize the shared core (run once per machine or per test):
+```bash
+# from project root or build/bin
+./init_core     # will read usrl_config.json or default config; see init_core usage
+```
+
+2. Start a publisher (example):
+```bash
+./pub
+```
+
+3. Start one or more subscribers:
+```bash
+./sub
+./sub  # parallel subscribers supported
+```
+
+Common commands & short explanations
+- usrl_core_init(...) — Create and populate the shared memory region. Only one process should run the initializer.
+- usrl_core_map(...) — Map an existing shared region for publishers/subscribers.
+- usrl_pub_init(...) / usrl_pub_publish(...) — SWMR publisher API.
+- usrl_mwmr_pub_init(...) / usrl_mwmr_pub_publish(...) — MWMR publisher API.
+- usrl_sub_init(...) / usrl_sub_next(...) — Subscriber API.
+
+Running the demos
+- The repository includes simple demo programs (pub/sub) — build them and run in separate terminals to validate functionality.
+- If init_core prints available topics, use exact topic names when starting publishers or subscribers.
+
+Configuration: usrl_config.json
+- Located at repo root and also used by init_core.
+- Edit with safe values (see existing "Configuration" section in the doc).
+- Use JSON validators (online or local) if you modify the file.
+
+Remote Debugging & Diagnostics
+Tools available in the container/path: apk, wget, ps, lsof, netstat, top, tree, find, grep, unzip, tar, gzip, bzip2.
+
+Useful commands:
+- Verify shared memory entries:
+  - ls -la /dev/shm | grep usrl
+- Inspect open sockets and ports:
+  - ss -ltnp or netstat -ltnp (netstat present per PATH)
+- Find processes using a shared object:
+  - lsof -nP | grep usrl_core
+- View running processes:
+  - ps aux | grep pub
+- Check memory usage:
+  - free -h
+- Trace a process syscalls (if strace available in your environment):
+  - strace -f -p <pid>
+
+Networking diagnostics
+- For TCP transports: use netstat/ss/lsof to inspect connections and ports.
+- For firewalls: ensure remote host allows configured port (iptables/nft).
+
+Common Issues and Resolutions (quick)
+- "Failed to map core" — init_core must be run as user that has write access to /dev/shm; verify file exists.
+- "Topic not found" — ensure init_core loaded the correct config; topic names are case-sensitive.
+- "No messages" — publisher may not be running, confirm with ps or add debug prints.
+- "Latency spikes" — check CPU affinity, CPU governor, and system load. Use taskset to pin processes.
+
+Testing Locally (unit/bench)
+- Benchmarks live under benchmarks/ or bench/; run the bench binaries after build.
+- For CI: we recommend running the benchmark in a quiet system (use CPU isolation and disable governor scaling).
+- Example benchmark run:
+  - ./bench/bench_pub_swmr --topic sensor_imu --rate 1000000
+
+Remote / Non-Interactive CI
+- Use the following minimal script for CI to build and run basic smoke tests:
+```sh
+#!/bin/sh
+set -e
+mkdir build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j$(nproc)
+# initialize and test mapping
+./init_core || { echo "init_core failed"; exit 1; }
+./pub --test-mode 1000 || echo "pub completed"
+./sub --test-mode 1000 || echo "sub completed"
+```
+
+Contributing & Code Layout (for remote dev)
+- Core implementation: core/src/*.c (usrl_core.c, ring_swmr.c, ring_mwmr.c)
+- Transport implementations: transport/*/src (tcp, udp, rdma)
+- Headers: core/includes or include/
+- Bench and example programs: examples/benchmarks/bin
+- Tests: tests/
+
+Pull Request checklist
+- Build succeeds in both Release and Debug
+- No regressions in major API behavior (usrl_core_init, mapping, pub/sub)
+- Add unit tests for new algorithms or bug fixes
+- Document behavior changes in USRL_Documentation.md
+
+API Quick Reference (cheatsheet)
+- usrl_core_init(path, size, topics, count) -> int
+- void* usrl_core_map(path, size)
+- usrl_get_topic(base, name) -> TopicEntry*
+- usrl_pub_init(UsrlPublisher*, base, topic, pub_id)
+- usrl_pub_publish(UsrlPublisher*, data, len)
+- usrl_mwmr_pub_init(UsrlMwmrPublisher*, base, topic, pub_id)
+- usrl_mwmr_pub_publish(UsrlMwmrPublisher*, data, len)
+- usrl_sub_init(UsrlSubscriber*, base, topic)
+- usrl_sub_next(UsrlSubscriber*, out_buf, buf_len, out_pub_id)
+
+Security & Permissions
+- Shared memory objects are created readable/writable by the creating user. If multiple users need access, coordinate permissions or use a system service to run init_core as a known user.
+- Do not expose /dev/shm objects to untrusted users — data is in clear memory.
+- For network transports, prefer TLS-wrapped streams if crossing untrusted networks (transport layer in project is currently plain TCP/UDP).
+
+Packaging & Releases
+- Produce release bundles including:
+  - Headers (include/)
+  - Static/shared libs (libusrl_core.a / .so)
+  - Binaries (init_core, pub, sub, bench)
+  - Default usrl_config.json
+  - USRL_Documentation.md
+- Tag repo by semantic version and include changelog in release notes.
+
+FAQ (short)
+Q: Can multiple processes be publishers to the same MWMR topic?
+A: Yes — MWMR APIs are designed for multi-writer safety.
+
+Q: Are messages persisted across reboots?
+A: No — shared memory segments are ephemeral and cleared by usrl_core_init. Use persistence layer externally if needed.
+
+Q: Can I use this across containers?
+A: Yes if containers share the same IPC namespace and have access to the shared memory path (e.g., /dev/shm). For cross-host, use the transport layer (TCP) to forward messages.
+
+Contact / Next Steps
+- For repo access problems contact the repository admin.
+- For deeper architecture questions, consult the annotated source in core/src which now contains Doxygen comments for all public APIs.

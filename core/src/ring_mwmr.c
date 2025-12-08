@@ -1,3 +1,12 @@
+/**
+ * @file ring_mwmr.c
+ * @brief Multi-writer / multiple-reader (MWMR) ring buffer publish/subscribe.
+ *
+ * Implements MWMR publisher and subscriber helpers that bind to rings created
+ * by usrl_core_init(). This module contains timing helpers, a simple backoff
+ * strategy and the MWMR publish path which ensures safe overwrites and
+ * deadlock prevention via timeouts.
+ */
 
 /* usrl_platform.h or at the top of ring_mwmr.c */
 
@@ -27,21 +36,29 @@
 #define DEBUG_PRINT_MWMR(...) ((void)0)
 #endif
 
-/* --------------------------------------------------------------------------
- * FIX #6: Use CLOCK_MONOTONIC instead of CLOCK_REALTIME
- * -------------------------------------------------------------------------- */
+/**
+ * @brief Return a monotonic timestamp in nanoseconds.
+ *
+ * Uses CLOCK_MONOTONIC to obtain a monotonic time suitable for message
+ * timestamps. This avoids issues with system clock adjustments.
+ *
+ * @return Current monotonic time in nanoseconds.
+ */
 static inline uint64_t usrl_timestamp_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 }
 
-/* --------------------------------------------------------------------------
- * Simple Backoff Strategy
+/**
+ * @brief Simple backoff strategy for spins.
  *
- *   - Tight spins for the first 10 iterations (low cost, avoids context switch)
- *   - sched_yield() thereafter to avoid starving other threads
- * -------------------------------------------------------------------------- */
+ * Implements a hybrid spin/yield strategy:
+ *  - Tight CPU relaxation for the first few iterations (low-cost).
+ *  - sched_yield() after threshold to avoid starving other threads.
+ *
+ * @param iter Current spin iteration count (0-based).
+ */
 static inline void backoff(int iter) {
     if (iter < 10) {
         CPU_RELAX();  /* x86 hint, nop on other archs */

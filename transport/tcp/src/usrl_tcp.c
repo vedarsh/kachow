@@ -1,6 +1,21 @@
-/* =============================================================================
- * USRL TCP TRANSPORT IMPLEMENTATION (ROBUST)
- * =============================================================================
+/**
+ * @file usrl_tcp.c
+ * @brief Robust TCP transport implementation for USRL.
+ *
+ * This module implements a blocking, robust TCP transport used by USRL for
+ * exchanging framed messages between peers. The implementation provides:
+ *  - Server and client creation helpers.
+ *  - Robust blocking send/recv helpers that handle EINTR and partial I/O.
+ *  - Stream framing helpers (length-prefixed exchange).
+ *  - Accept helper with short timeout for graceful server loops.
+ *
+ * The send/recv helpers are careful to:
+ *  - Retry on EINTR.
+ *  - Avoid SIGPIPE via MSG_NOSIGNAL where supported.
+ *  - Return partial counts for EOF scenarios where appropriate.
+ *
+ * Thread-safety: sockets returned are standard POSIX sockets; callers are
+ * responsible for synchronization if shared across threads.
  */
 
 #define _GNU_SOURCE
@@ -21,6 +36,15 @@
 /* --------------------------------------------------------------------------
  * Helpers
  * -------------------------------------------------------------------------- */
+/**
+ * @brief Enable TCP_NODELAY (disable Nagle) on a socket.
+ *
+ * Disabling Nagle is useful for low-latency transports where small writes
+ * must not be coalesced. This helper is best-effort; errors from setsockopt
+ * are ignored by design.
+ *
+ * @param fd Socket file descriptor.
+ */
 static void set_tcp_nodelay(int fd) {
     int opt = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
@@ -30,10 +54,28 @@ static void set_tcp_nodelay(int fd) {
  * SERVER FACTORY
  * =============================================================================
  */
+/**
+ * @brief Create a TCP server transport.
+ *
+ * Creates a listening TCP socket bound to the provided host:port and returns
+ * an allocated usrl_transport_t context on success.
+ *
+ * Behavior details:
+ *  - The returned transport is configured blocking.
+ *  - SO_REUSEADDR and SO_REUSEPORT are set to ease rapid restarts.
+ *  - The listening socket uses a small receive timeout (100ms) so that
+ *    accept() returns periodically to allow graceful shutdown checks.
+ *
+ * @param host IPv4 address string to bind to (NULL or "0.0.0.0" to bind all).
+ * @param port TCP port to bind to.
+ * @param ring_size Ignored by TCP transport (present for API parity).
+ * @param mode Ignored by TCP transport (present for API parity).
+ * @return Pointer to an allocated usrl_transport_t on success, or NULL on error.
+ */
 usrl_transport_t *usrl_tcp_create_server(
-    const char      *host, 
-    int              port, 
-    size_t           ring_size, 
+    const char      *host,
+    int              port,
+    size_t           ring_size,
     usrl_ring_mode_t mode
 ) {
     (void)ring_size; (void)mode;
@@ -82,10 +124,23 @@ err:
  * CLIENT FACTORY
  * =============================================================================
  */
+/**
+ * @brief Create a TCP client transport and connect to host:port.
+ *
+ * Creates a TCP socket, optionally sets TCP_NODELAY and performs a blocking
+ * connect. On success returns an allocated usrl_transport_t bound to the
+ * connected socket.
+ *
+ * @param host IPv4 address string of the remote host.
+ * @param port Remote TCP port.
+ * @param ring_size Ignored by TCP transport (API parity).
+ * @param mode Ignored by TCP transport (API parity).
+ * @return Pointer to an allocated usrl_transport_t on success, or NULL on error.
+ */
 usrl_transport_t *usrl_tcp_create_client(
-    const char      *host, 
-    int              port, 
-    size_t           ring_size, 
+    const char      *host,
+    int              port,
+    size_t           ring_size,
     usrl_ring_mode_t mode
 ) {
     (void)ring_size; (void)mode;
@@ -126,6 +181,19 @@ err:
  * ACCEPT
  * =============================================================================
  */
+/**
+ * @brief Accept a new client connection from a server transport.
+ *
+ * This wraps accept() and returns a newly-allocated client transport context
+ * pointing to the accepted socket. The server socket is configured with a
+ * short SO_RCVTIMEO (100ms) so accept() will periodically return on timeout
+ * allowing the server loop to perform maintenance or shutdown.
+ *
+ * @param server Pointer to server usrl_transport_t (listening socket).
+ * @param client_out Out parameter receiving allocated client transport pointer.
+ * @return 0 on success, -1 on timeout or error. Caller should inspect errno
+ *         to distinguish timeout vs other errors.
+ */
 int usrl_tcp_accept_impl(usrl_transport_t *server, usrl_transport_t **client_out) {
     /* accept() blocks for 100ms (SO_RCVTIMEO) */
     int client_fd = accept(server->sockfd, NULL, NULL);
@@ -154,6 +222,17 @@ int usrl_tcp_accept_impl(usrl_transport_t *server, usrl_transport_t **client_out
  * SEND (BLOCKING, ROBUST)
  * =============================================================================
  */
+/**
+ * @brief Robust blocking send that fully writes the requested buffer.
+ *
+ * This function attempts to send exactly len bytes, looping on partial writes
+ * and EINTR. It also uses MSG_NOSIGNAL to avoid SIGPIPE on peer disconnects.
+ *
+ * @param ctx Transport context with valid connected socket.
+ * @param data Pointer to bytes to send.
+ * @param len Number of bytes to send.
+ * @return Number of bytes written on success (== len), or -1 on error.
+ */
 ssize_t usrl_tcp_send(usrl_transport_t *ctx, const void *data, size_t len) {
     if (!ctx) return -1;
     
@@ -178,6 +257,17 @@ ssize_t usrl_tcp_send(usrl_transport_t *ctx, const void *data, size_t len) {
 /* =============================================================================
  * RECV (BLOCKING, ROBUST)
  * =============================================================================
+ */
+/**
+ * @brief Robust blocking recv that fully reads the requested buffer.
+ *
+ * This function loops until len bytes have been received or EOF/error occurs.
+ * On EOF it returns the number of bytes read so far (0 if no data read).
+ *
+ * @param ctx Transport context with valid connected socket.
+ * @param data Buffer to receive into.
+ * @param len Number of bytes to read.
+ * @return Number of bytes read (may be < len on EOF), or -1 on error.
  */
 ssize_t usrl_tcp_recv(usrl_transport_t *ctx, void *data, size_t len) {
     if (!ctx) return -1;
@@ -208,6 +298,21 @@ ssize_t usrl_tcp_recv(usrl_transport_t *ctx, void *data, size_t len) {
  * STREAM RECV (BLOCKING, ROBUST)
  * =============================================================================
  */
+/**
+ * @brief Send a length-prefixed frame (network-order u32 length then payload).
+ *
+ * The stream helpers implement a simple framing protocol:
+ *  - Sender: send(u32 length in network byte order), send(payload)
+ *  - Receiver: recv(u32 length), recv(payload)
+ *
+ * usrl_tcp_stream_recv is the sender side for framed RPC-style exchanges: it
+ * first transmits the frame length then the payload.
+ *
+ * @param ctx Transport context.
+ * @param data Pointer to payload to send.
+ * @param len Payload length in bytes (must fit in uint32_t).
+ * @return 0 on success, -1/-2 on failure (see implementation).
+ */
 ssize_t usrl_tcp_stream_recv(usrl_transport_t *ctx, void *data, size_t len) {
     if(ctx == NULL || data == NULL || len == 0) {
         return -1;
@@ -229,6 +334,22 @@ ssize_t usrl_tcp_stream_recv(usrl_transport_t *ctx, void *data, size_t len) {
 /*=============================================================================
  * STREAM SEND (BLOCKING, ROBUST)
  * =============================================================================
+ */
+/**
+ * @brief Receive a length-prefixed frame (blocking).
+ *
+ * Reads a network-order u32 length prefix, converts it to host order and then
+ * reads that many bytes into the provided buffer. Ensures the provided buffer
+ * is large enough for the incoming frame.
+ *
+ * @param ctx Transport context.
+ * @param data Buffer to receive into.
+ * @param len Size of provided buffer in bytes.
+ * @return Number of bytes received (frame length) on success.
+ *         Negative values indicate errors:
+ *           -1 framing/header read failed,
+ *           -2 frame too large for provided buffer,
+ *           -3 payload read failed.
  */
 ssize_t usrl_tcp_stream_send(usrl_transport_t *ctx, const void *data, size_t len) {
     if(ctx == NULL || data == NULL || len == 0) {
@@ -258,7 +379,14 @@ ssize_t usrl_tcp_stream_send(usrl_transport_t *ctx, const void *data, size_t len
  * DESTROY
  * =============================================================================
  */
-
+/**
+ * @brief Destroy and free a transport context, closing the underlying socket.
+ *
+ * Safe to call with NULL. After this call the transport pointer must not be
+ * used.
+ *
+ * @param ctx_ Pointer to transport context returned from create_client/server.
+ */
 void usrl_tcp_destroy(usrl_transport_t *ctx_) {
     struct usrl_transport_ctx *ctx = (struct usrl_transport_ctx*)ctx_;
     if (!ctx) return;

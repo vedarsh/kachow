@@ -1,3 +1,13 @@
+/**
+ * @file ring_swmr.c
+ * @brief Single-writer / multiple-reader ring buffer publish/subscribe helpers.
+ *
+ * This module implements publisher and subscriber helpers that bind to a ring
+ * previously created by usrl_core_init(). The publish path is optimized for a
+ * single writer and multiple readers; the subscribe path is a low-latency
+ * optimistic reader using seqlock-style verification.
+ */
+
 #include "usrl_core.h"
 #include "usrl_ring.h"
 
@@ -15,12 +25,14 @@
 #define DEBUG_PRINT_RING(...) ((void)0)
 #endif
 
-/* --------------------------------------------------------------------------
- * 
+/**
+ * @brief Return a monotonic timestamp in nanoseconds.
  *
- * Returns a monotonic timestamp in nanoseconds.
- * CLOCK_MONOTONIC is guaranteed monotonic and suitable for timing.
- * -------------------------------------------------------------------------- */
+ * Uses CLOCK_MONOTONIC to obtain a monotonic time suitable for timestamps
+ * attached to published messages.
+ *
+ * @return Current monotonic time in nanoseconds.
+ */
 static inline uint64_t usrl_timestamp_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -30,20 +42,19 @@ static inline uint64_t usrl_timestamp_ns(void) {
 /* =============================================================================
  * PUBLISHER INITIALIZATION
  * =============================================================================
+ */
+
+/**
+ * @brief Initialize a publisher handle for a specific topic.
  *
- * usrl_pub_init()
+ * Binds the publisher to an existing ring described in shared memory. No
+ * allocations are performed here; the function only populates the provided
+ * UsrlPublisher structure with pointers/metadata to the ring.
  *
- * Sets up a publisher handle for a specific topic. The publisher stores:
- *
- *   - RingDesc ptr   (metadata for the ring)
- *   - Base pointer   (beginning of slots)
- *   - Mask           (slot_count - 1; enables fast index wrap)
- *   - pub_id         (publisher identity)
- *
- * No shared memory is allocated here. Everything is already laid out by
- * usrl_core_init(). We simply bind the publisher to an existing topic.
- *
- * =============================================================================
+ * @param p Pointer to UsrlPublisher to initialize.
+ * @param core_base Base address of a mapped USRL region.
+ * @param topic Null-terminated name of the topic to bind to.
+ * @param pub_id Publisher identifier to record in slot headers.
  */
 void usrl_pub_init(
     UsrlPublisher *p,
@@ -70,23 +81,19 @@ void usrl_pub_init(
     DEBUG_PRINT_RING("publisher %u ready\n", pub_id);
 }
 
-/* =============================================================================
- * PUBLISH
- * =============================================================================
+/**
+ * @brief Publish a message into the publisher's ring.
  *
- * usrl_pub_publish()
+ * Single-producer path:
+ *  - Reserve an index via atomic_fetch_add.
+ *  - Copy payload into the reserved slot, set metadata and monotonic timestamp.
+ *  - Use a release fence and then publish the slot sequence number.
  *
- * Single-producer publish path:
- *
- *   1. Reserve a slot index via atomic_fetch_add (lock-free).
- *   2. Compute slot pointer.
- *   3. Write payload, metadata, timestamp.
- *   4. Insert memory barrier (FIX #2).
- *   5. Commit by writing hdr->seq with memory_order_release.
- *
- * Consumers will not read the slot until seq == expected_commit_sequence.
- *
- * =============================================================================
+ * @param p Publisher handle previously initialized with usrl_pub_init.
+ * @param data Pointer to payload bytes to publish.
+ * @param len Length of payload in bytes.
+ * @return 0 on success, negative error code on failure:
+ *         -1 invalid args, -2 payload too large.
  */
 int usrl_pub_publish(
     UsrlPublisher *p,
@@ -152,17 +159,16 @@ int usrl_pub_publish(
 /* =============================================================================
  * SUBSCRIBER INITIALIZATION
  * =============================================================================
+ */
+
+/**
+ * @brief Initialize a subscriber handle for a specific topic.
  *
- * usrl_sub_init()
+ * Binds the subscriber to an existing ring and initializes its read cursor.
  *
- * Sets up a subscriber for a topic.
- * Tracks:
- *   - RingDesc
- *   - Base pointer
- *   - Mask
- *   - last_seq (tracks which sequence number to read next)
- *
- * =============================================================================
+ * @param s Subscriber handle to initialize.
+ * @param core_base Base address of a mapped USRL region.
+ * @param topic Null-terminated name of the topic to subscribe to.
  */
 void usrl_sub_init(
     UsrlSubscriber *s,
@@ -187,27 +193,24 @@ void usrl_sub_init(
 /* =============================================================================
  * SUBSCRIBER NEXT MESSAGE
  * =============================================================================
+ */
+
+/**
+ * @brief Read the next available message for the subscriber.
  *
- * usrl_sub_next()
+ * Performs a bounded and optimistic read:
+ *  - Checks writer head and detects if subscriber has fallen behind.
+ *  - Reads the slot payload into out_buf if available.
+ *  - Verifies the slot sequence after the copy to detect torn reads.
  *
- * Reads the next available message, if any. This is a very tight,
- * low-latency zero-copy consumer.
- *
- * Steps:
- *   1. Load w_head (writer head).
- *   2. Compute next sequence number subscriber expects.
- *   3. Handle overflow/skips if subscriber fell behind (FIX #3).
- *   4. Load the slot; check seq ordering.
- *   5. Copy payload out.
- *   6. Verify seq again (FIX #5: detect torn reads).
- *
- * Returns:
- *   >0 = payload length
- *    0 = no new message
- *   -1 = bad input
- *   -3 = subscriber-provided buffer too small
- *
- * =============================================================================
+ * @param s Subscriber handle.
+ * @param out_buf Buffer to receive the payload bytes.
+ * @param buf_len Size of out_buf in bytes.
+ * @param out_pub_id Optional pointer to receive publisher id of the message.
+ * @return >0 payload length on success,
+ *          0 no new message,
+ *         -1 invalid args,
+ *         -3 out_buf too small.
  */
 int usrl_sub_next(
     UsrlSubscriber *s,
