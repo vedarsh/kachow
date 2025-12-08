@@ -60,6 +60,8 @@ usrl_transport_t *usrl_trans_create(
 int usrl_trans_accept(usrl_transport_t *server, usrl_transport_t **client_out);
 ssize_t usrl_trans_send(usrl_transport_t *ctx, const void *data, size_t len);
 ssize_t usrl_trans_recv(usrl_transport_t *ctx, void *data, size_t len);
+ssize_t usrl_trans_stream_send(usrl_transport_t *ctx, const void *data, size_t len);
+ssize_t usrl_trans_stream_recv(usrl_transport_t *ctx, void *data, size_t len);
 void usrl_trans_destroy(usrl_transport_t *ctx);
 
 #endif /* USRL_NET_H */

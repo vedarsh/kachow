@@ -1,12 +1,16 @@
-#include "usrl_core.h"
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
+/**
+ * @file usrl_core.c
+ * @brief Core routines for creating and mapping the USRL shared memory region.
+ *
+ * This file contains the implementation of the core allocator/builder that
+ * constructs a shared memory layout for topics, ring descriptors and slots,
+ * plus utilities to map an existing USRL region and to lookup topics by name.
+ *
+ * The public API implemented here:
+ *  - usrl_core_init() : create and initialize a new USRL SHM region
+ *  - usrl_core_map()  : map an existing USRL SHM region
+ *  - usrl_get_topic() : find a topic entry by name in a mapped region
+ */
 
 /* --------------------------------------------------------------------------
  * Debug Helpers
@@ -22,6 +26,15 @@
  * Utility: Next power-of-two (u32)
  * Used to normalize slot counts so rings remain modulus-friendly.
  * -------------------------------------------------------------------------- */
+/**
+ * @brief Compute the next power-of-two for a 32-bit unsigned integer.
+ *
+ * This helper normalizes slot counts so that ring sizes are powers of two
+ * (which simplifies index masking and modular arithmetic).
+ *
+ * @param v Input value.
+ * @return The smallest power-of-two >= v. If v == 0 returns 1.
+ */
 static uint32_t next_power_of_two_u32(uint32_t v) {
     if (v == 0) return 1;
     v--;
@@ -60,6 +73,33 @@ static uint32_t next_power_of_two_u32(uint32_t v) {
  *  -4  = out of memory during slot allocation
  *
  * =============================================================================
+ */
+/**
+ * @brief Initialize and build a new USRL shared memory region.
+ *
+ * High-level behavior:
+ *  1) Remove any existing SHM object at 'path'.
+ *  2) Create a new shared memory object and set its size to 'size'.
+ *  3) mmap() the region and lay out:
+ *       - CoreHeader
+ *       - Topic table
+ *       - RingDesc array
+ *       - Per-topic slot memory
+ *  4) Initialize slot headers and ring descriptors.
+ *
+ * The caller must ensure 'topics' points to an array of 'count' UsrlTopicConfig
+ * entries describing each topic to reserve.
+ *
+ * @param path Filesystem path (name) for the POSIX shared memory object.
+ * @param size Total size, in bytes, to allocate for the USRL region.
+ * @param topics Array of topic configuration descriptors.
+ * @param count Number of topics in the 'topics' array.
+ *
+ * @return 0 on success.
+ *         -1 on invalid parameters or shm_open failure.
+ *         -2 on ftruncate failure.
+ *         -3 on mmap failure.
+ *         -4 if insufficient shared memory remains to allocate topic slots.
  */
 int usrl_core_init(
     const char           *path,
@@ -238,6 +278,16 @@ int usrl_core_init(
  * Maps an already-created USRL SHM region into the caller's address space.
  * =============================================================================
  */
+/**
+ * @brief Map an existing USRL shared memory region into the caller's address space.
+ *
+ * This returns a pointer to the mapped base address which must later be munmap()'ed
+ * by the caller when no longer needed.
+ *
+ * @param path The name/path of the POSIX shared memory object.
+ * @param size The size that was originally used to create the SHM region.
+ * @return Pointer to mapped base on success, or NULL on failure.
+ */
 void* usrl_core_map(const char *path, uint64_t size) {
     int fd = shm_open(path, O_RDWR, 0666);
     if (fd < 0) return NULL;
@@ -260,6 +310,17 @@ void* usrl_core_map(const char *path, uint64_t size) {
  * Performs a linear search over the topic table to find a topic by name.
  * Caller must supply the beginning of the mapped USRL region.
  * =============================================================================
+ */
+/**
+ * @brief Look up a topic entry by name in a mapped USRL region.
+ *
+ * Performs a linear search over the topic table. The caller must supply a valid
+ * mapped USRL base pointer. The returned TopicEntry pointer points into the
+ * mapped region and must not be dereferenced after the mapping is unmapped.
+ *
+ * @param base Base address of a mapped USRL region.
+ * @param name Null-terminated topic name to search for.
+ * @return Pointer to the matching TopicEntry, or NULL if not found or invalid base.
  */
 TopicEntry* usrl_get_topic(void *base, const char *name) {
     if (!base || !name)

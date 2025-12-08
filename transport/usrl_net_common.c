@@ -85,6 +85,24 @@ ssize_t usrl_trans_send(usrl_transport_t *ctx, const void *data, size_t len) {
             return -1;
     }
 }
+/* --------------------------------------------------------------------------
+ * Stream Send Dispatcher
+ * -------------------------------------------------------------------------- */
+ssize_t usrl_trans_stream_send(usrl_transport_t *ctx, const void *data, size_t len) {
+    if (!ctx) return -1;
+
+    usrl_transport_type_t type = ((struct usrl_transport_ctx*)ctx)->type;
+
+    switch (type)
+    {
+    case USRL_TRANS_TCP:
+        return usrl_tcp_stream_send(ctx, data, len);
+        break;
+    
+    default:
+        return -1;
+    }
+}
 
 /* --------------------------------------------------------------------------
  * Recv Dispatcher
@@ -97,11 +115,30 @@ ssize_t usrl_trans_recv(usrl_transport_t *ctx, void *data, size_t len) {
     switch (type) {
         case USRL_TRANS_TCP:
             return usrl_tcp_recv(ctx, data, len);
-
+                
         default:
             return -1;
     }
 }
+
+/* --------------------------------------------------------------------------
+ * Stream Recv Dispatcher
+ * -------------------------------------------------------------------------- */
+ssize_t usrl_trans_stream_recv(usrl_transport_t *ctx, void *data, size_t len) {
+    if (!ctx) return -1;
+
+    usrl_transport_type_t type = ((struct usrl_transport_ctx*)ctx)->type;
+
+    switch (type)
+    {
+    case USRL_TRANS_TCP:
+        return usrl_tcp_stream_recv(ctx, data, len);
+
+    default:
+        return -1;
+    }
+}
+        
 
 /* --------------------------------------------------------------------------
  * Destroy Dispatcher
