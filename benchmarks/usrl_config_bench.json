@@ -8,6 +8,9 @@
     { "name": "mwmr_contention", "slots": 128, "payload_size": 64, "type": "mwmr" },
     
     { "name": "tcp_requests", "slots": 4096, "payload_size": 4096, "type": "swmr" },
-    { "name": "tcp_responses", "slots": 4096, "payload_size": 4096, "type": "swmr" }
+    { "name": "tcp_responses", "slots": 4096, "payload_size": 4096, "type": "swmr" },
+
+    { "name": "udp_requests", "slots": 4096, "payload_size": 4096, "type": "swmr" },
+    { "name": "udp_responses", "slots": 4096, "payload_size": 4096, "type": "swmr" }
   ]
 }

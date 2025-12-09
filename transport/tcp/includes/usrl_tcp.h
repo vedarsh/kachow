@@ -41,7 +41,7 @@
  *   - sub: Subscriber handle for RECV path (socket -> ring -> app)
  * =============================================================================
  */
-/* transport/includes/usrl_tcp.h - CORRECTED STRUCT */
+/* transport/includes/usrl_tcp.h */
 struct usrl_transport_ctx {
     usrl_transport_type_t type;           /* Must be first: USRL_TRANS_TCP */
     

@@ -26,7 +26,7 @@
 #include "usrl_net.h"
 #include "usrl_tcp.h"
 #include "usrl_ring.h"
-/* #include "usrl_udp.h" */
+#include "usrl_udp.h"
 
 #include <stddef.h>
 
@@ -62,10 +62,12 @@ usrl_transport_t *usrl_trans_create(
                 return usrl_tcp_create_client(host, port, ring_size, mode);
             }
         
-        /* Future expansion:
         case USRL_TRANS_UDP:
-            return usrl_udp_create(...);
-        */
+            if (is_server) {
+                return usrl_udp_create_server(host, port, ring_size, mode);
+            } else {
+                return usrl_udp_create_client(host, port, ring_size, mode);
+            }
 
         default:
             return NULL;
@@ -95,6 +97,10 @@ int usrl_trans_accept(usrl_transport_t *server, usrl_transport_t **client_out) {
     switch (type) {
         case USRL_TRANS_TCP:
             return usrl_tcp_accept_impl(server, client_out);
+
+        case USRL_TRANS_UDP:
+            /* UDP is connectionless; no accept */
+            return 0;
             
         default:
             return -1;
@@ -124,10 +130,8 @@ ssize_t usrl_trans_send(usrl_transport_t *ctx, const void *data, size_t len) {
         case USRL_TRANS_TCP:
             return usrl_tcp_send(ctx, data, len);
 
-        /* 
         case USRL_TRANS_UDP:
             return usrl_udp_send(ctx, data, len);
-        */
 
         default:
             return -1;
@@ -156,7 +160,9 @@ ssize_t usrl_trans_stream_send(usrl_transport_t *ctx, const void *data, size_t l
     {
     case USRL_TRANS_TCP:
         return usrl_tcp_stream_send(ctx, data, len);
-        break;
+
+    case USRL_TRANS_UDP:
+        return usrl_udp_stream_send(ctx, data, len);
     
     default:
         return -1;
@@ -185,6 +191,8 @@ ssize_t usrl_trans_recv(usrl_transport_t *ctx, void *data, size_t len) {
     switch (type) {
         case USRL_TRANS_TCP:
             return usrl_tcp_recv(ctx, data, len);
+        case USRL_TRANS_UDP:
+            return usrl_udp_recv(ctx, data, len);
                 
         default:
             return -1;
@@ -214,6 +222,8 @@ ssize_t usrl_trans_stream_recv(usrl_transport_t *ctx, void *data, size_t len) {
     {
     case USRL_TRANS_TCP:
         return usrl_tcp_stream_recv(ctx, data, len);
+    case USRL_TRANS_UDP:
+        return usrl_udp_stream_recv(ctx, data, len);
 
     default:
         return -1;
@@ -241,6 +251,9 @@ void usrl_trans_destroy(usrl_transport_t *ctx) {
     switch (type) {
         case USRL_TRANS_TCP:
             usrl_tcp_destroy(ctx);
+            break;
+        case USRL_TRANS_UDP:
+            usrl_udp_destroy(ctx);
             break;
 
         default:

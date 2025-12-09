@@ -28,6 +28,17 @@ target_link_libraries(bench_tcp_client usrl_net usrl_core)
 add_executable(bench_tcp_mt bench_tcp_mt.c)
 target_link_libraries(bench_tcp_mt usrl_net usrl_core pthread rt)
 
+# 2. TCP Benchmarks (need usrl_net headers + libs)
+add_executable(bench_udp_server bench_udp_server.c)
+target_link_libraries(bench_udp_server usrl_net usrl_core)
+# Automatically gets transport/includes from usrl_net target
+
+add_executable(bench_udp_flood bench_udp_flood.c)
+target_link_libraries(bench_udp_flood usrl_net usrl_core)
+
+add_executable(bench_udp_mt bench_udp_mt.c)
+target_link_libraries(bench_udp_mt usrl_net usrl_core pthread rt)
+
 
 # Copy the config JSON to the build directory
 configure_file(

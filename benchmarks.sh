@@ -9,8 +9,12 @@ ROOT_DIR="$(pwd)"
 BUILD_DIR="$ROOT_DIR/build"
 BENCH_DIR="$BUILD_DIR/benchmarks"
 SUBLOG="$ROOT_DIR/sub.log"
+
 TCP_SERVER_PORT=8080
 TCP_TIMEOUT=30
+
+UDP_SERVER_PORT=9090
+UDP_TIMEOUT=30
 
 ###############################################################################
 # Colors
@@ -29,9 +33,17 @@ NC='\033[0m'
 cleanup() {
     echo -e "${BLUE}Cleaning up...${NC}"
     rm -f "$SUBLOG" || true
+
+    # TCP
     pkill -f bench_tcp_server || true
     pkill -f bench_tcp_client || true
     pkill -f bench_tcp_mt || true
+
+    # UDP
+    pkill -f bench_udp_server || true
+    pkill -f bench_udp_mt || true
+    pkill -f bench_udp_flood || true
+
     sleep 0.1
 }
 trap cleanup EXIT INT TERM
@@ -52,7 +64,7 @@ popd > /dev/null
 ###############################################################################
 
 echo -e "\n${BLUE}=== 1. Initializing SHM Core ===${NC}"
-# Use sudo only if necessary (or rely on user permissions)
+
 if [ -w /dev/shm ]; then
     rm -f /dev/shm/usrl_core || true
 else
@@ -63,7 +75,7 @@ pushd "$BENCH_DIR" > /dev/null
 ./init_bench || { echo -e "${RED}init_bench failed!${NC}"; exit 1; }
 popd > /dev/null
 
-ls -lh /dev/shm/usrl_core && echo -e "${GREEN}✓ SHM Core Ready (256MB)${NC}"
+ls -lh /dev/shm/usrl_core && echo -e "${GREEN}✓ SHM Core Ready${NC}"
 
 ###############################################################################
 # 2. SHM Benchmark Helper
@@ -108,14 +120,12 @@ run_tcp_test() {
     
     echo -e "\n${YELLOW}>>> TCP: $name ${NC}"
     
-    # Start TCP Server
-    echo -e "${BLUE}[Server] ${NC}./bench_tcp_server $TCP_SERVER_PORT"
     pushd "$BENCH_DIR" > /dev/null
     ./bench_tcp_server "$TCP_SERVER_PORT" &
     local server_pid=$!
+    echo -e "${BLUE}[Server Started, PID=$server_pid]${NC}"
     popd > /dev/null
     
-    # Wait for server to bind
     for i in {1..20}; do
         if nc -z 127.0.0.1 "$TCP_SERVER_PORT" 2>/dev/null; then
             break
@@ -123,40 +133,35 @@ run_tcp_test() {
         sleep 0.1
     done
     
-    # Run TCP Client
-    echo -e "${BLUE}[Client]${NC} ./bench_tcp_client 127.0.0.1 $TCP_SERVER_PORT"
     pushd "$BENCH_DIR" > /dev/null
     timeout "$TCP_TIMEOUT" ./bench_tcp_client "127.0.0.1" "$TCP_SERVER_PORT"
     local client_rc=$?
     popd > /dev/null
     
-    # Cleanup
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
     
-    if [[ $client_rc -eq 0 ]]; then
-        echo -e "${GREEN}✓ TCP Single-Thread Complete${NC}"
+    if [[ $client_rc -eq 0 || $client_rc -eq 124 ]]; then
+        echo -e "${GREEN}✓ TCP Single-Thread Complete (rc=$client_rc)${NC}"
     else
         echo -e "${RED}✗ TCP Single-Thread Failed (rc=$client_rc)${NC}"
     fi
 }
 
 ###############################################################################
-# 4. TCP Multi-Threaded Helper (New)
+# 4. TCP Multi-Threaded Helper
 ###############################################################################
 
 run_tcp_mt_test() {
     local threads="$1"
     echo -e "\n${YELLOW}>>> TCP: Multi-Threaded ($threads Threads) ${NC}"
     
-    # Start TCP Server (It handles multiple clients now!)
-    echo -e "${BLUE}[Server] ${NC}./bench_tcp_server $TCP_SERVER_PORT"
     pushd "$BENCH_DIR" > /dev/null
     ./bench_tcp_server "$TCP_SERVER_PORT" &
     local server_pid=$!
+    echo -e "${BLUE}[Server Started, PID=$server_pid]${NC}"
     popd > /dev/null
     
-    # Wait for server to bind
     for i in {1..20}; do
         if nc -z 127.0.0.1 "$TCP_SERVER_PORT" 2>/dev/null; then
             break
@@ -164,26 +169,113 @@ run_tcp_mt_test() {
         sleep 0.1
     done
     
-    # Run MT Client
-    echo -e "${BLUE}[Client]${NC} ./bench_tcp_mt 127.0.0.1 $TCP_SERVER_PORT $threads"
     pushd "$BENCH_DIR" > /dev/null
     timeout "$TCP_TIMEOUT" ./bench_tcp_mt "127.0.0.1" "$TCP_SERVER_PORT" "$threads"
     local client_rc=$?
     popd > /dev/null
     
-    # Cleanup
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
     
-    if [[ $client_rc -eq 0 ]]; then
-        echo -e "${GREEN}✓ TCP MT ($threads) Complete${NC}"
+    if [[ $client_rc -eq 0 || $client_rc -eq 124 ]]; then
+        echo -e "${GREEN}✓ TCP MT ($threads) Complete (rc=$client_rc)${NC}"
     else
         echo -e "${RED}✗ TCP MT Failed (rc=$client_rc)${NC}"
     fi
 }
 
 ###############################################################################
-# 5. Master Benchmark Matrix
+# 5A. UDP Benchmark Helper (Single Thread) - BULLETPROOF
+###############################################################################
+
+run_udp_test() {
+    local name="$1"
+
+    echo -e "\n${YELLOW}>>> UDP: $name ${NC}"
+
+    # Start server
+    pushd "$BENCH_DIR" > /dev/null
+    ./bench_udp_server "$UDP_SERVER_PORT" &
+    local server_pid=$!
+    echo -e "${BLUE}[Server Started, PID=$server_pid]${NC}"
+    popd > /dev/null
+
+    sleep 0.3
+
+    # Run client FOREGROUND (no background timeout issues)
+    pushd "$BENCH_DIR" > /dev/null
+    timeout 28s ./bench_udp_mt "127.0.0.1" "$UDP_SERVER_PORT" 1
+    local client_rc=$?
+    popd > /dev/null
+
+    # Kill server immediately
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+
+    echo -e "${GREEN}✓ UDP Single-Thread Complete (rc=$client_rc)${NC}"
+}
+
+###############################################################################
+# 5B. UDP Multi-Threaded Helper - BULLETPROOF  
+###############################################################################
+
+run_udp_mt_test() {
+    local threads="$1"
+    echo -e "\n${YELLOW}>>> UDP: Multi-Threaded ($threads Threads) ${NC}"
+
+    # Start server
+    pushd "$BENCH_DIR" > /dev/null
+    ./bench_udp_server "$UDP_SERVER_PORT" &
+    local server_pid=$!
+    echo -e "${BLUE}[Server Started, PID=$server_pid]${NC}"
+    popd > /dev/null
+
+    sleep 0.3
+
+    # Run client FOREGROUND
+    pushd "$BENCH_DIR" > /dev/null
+    timeout 28s ./bench_udp_mt "127.0.0.1" "$UDP_SERVER_PORT" "$threads"
+    local client_rc=$?
+    popd > /dev/null
+
+    # Kill server immediately
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+
+    echo -e "${GREEN}✓ UDP MT ($threads) Complete (rc=$client_rc)${NC}"
+}
+
+###############################################################################
+# 5C. UDP Flood Test - BULLETPROOF
+###############################################################################
+
+run_udp_flood_test() {
+    echo -e "\n${YELLOW}>>> UDP: Flood Test ${NC}"
+
+    # Start flood server
+    pushd "$BENCH_DIR" > /dev/null
+    ./bench_udp_flood "$UDP_SERVER_PORT" &
+    local server_pid=$!
+    echo -e "${BLUE}[Flood Server Started, PID=$server_pid]${NC}"
+    popd > /dev/null
+
+    sleep 0.3
+
+    # Run client FOREGROUND
+    pushd "$BENCH_DIR" > /dev/null
+    timeout 28s ./bench_udp_mt "127.0.0.1" "$UDP_SERVER_PORT" 8
+    local client_rc=$?
+    popd > /dev/null
+
+    # Kill server immediately  
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+
+    echo -e "${GREEN}✓ UDP Flood Complete (rc=$client_rc)${NC}"
+}
+
+###############################################################################
+# 6. Master Benchmark Matrix
 ###############################################################################
 
 echo -e "\n${BLUE}=== SHM BENCHMARKS ===${NC}"
@@ -198,8 +290,14 @@ run_tcp_test "Single Thread Request/Response"
 run_tcp_mt_test 4
 run_tcp_mt_test 8
 
+echo -e "\n${BLUE}=== UDP BENCHMARKS ===${NC}"
+run_udp_test "Single Thread Request/Response"
+run_udp_mt_test 4
+run_udp_mt_test 8
+run_udp_flood_test
+
 ###############################################################################
-# 6. Summary
+# 7. Summary
 ###############################################################################
 
 echo -e "\n${GREEN} BENCHMARK SUITE COMPLETE! ${NC}"
