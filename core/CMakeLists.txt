@@ -4,7 +4,7 @@
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/includes)
 
 # --- Library Definition ---
-add_library(usrl_core STATIC
+add_library(usrl_core SHARED
     src/usrl_core.c
     src/ring_swmr.c
     src/ring_mwmr.c

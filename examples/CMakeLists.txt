@@ -22,3 +22,8 @@ add_executable(soak_test
     soak_test.c
 )
 target_link_libraries(soak_test PRIVATE usrl_core pthread)
+
+add_executable(health_test
+    health_test.c
+)
+target_link_libraries(health_test PRIVATE usrl_core pthread)
