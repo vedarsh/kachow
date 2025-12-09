@@ -364,3 +364,9 @@ TopicEntry *usrl_get_topic(void *base, const char *name)
 
     return NULL;
 }
+
+void usrl_core_unmap(void *base, size_t size) {
+    if (base) {
+        munmap(base, size);
+    }
+}

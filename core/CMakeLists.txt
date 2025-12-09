@@ -8,6 +8,11 @@ add_library(usrl_core STATIC
     src/usrl_core.c
     src/ring_swmr.c
     src/ring_mwmr.c
+    src/usrl_health.c
+    src/usrl_backpressure.c
+    src/usrl_logging.c
+    src/usrl_schema.c
+    src/usrl.c
 )
 
 # Link required system libs

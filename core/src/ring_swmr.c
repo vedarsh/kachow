@@ -330,3 +330,37 @@ int usrl_sub_next(
     s->last_seq = next;
     return (int)payload_len;
 }
+
+
+/* =============================================================================
+ * REAL HEALTH TELEMETRY ACCESSORS (SWMR)
+ * ============================================================================= */
+
+/* Total published messages = current write head */
+uint64_t usrl_swmr_total_published(void *ring_desc)
+{
+    if (!ring_desc) return 0;
+    RingDesc *d = (RingDesc *)ring_desc;
+
+    return atomic_load_explicit(&d->w_head, memory_order_acquire);
+}
+
+/* Last publish timestamp = timestamp of most recent committed slot */
+uint64_t usrl_swmr_last_publish_ns(void *ring_desc)
+{
+    if (!ring_desc) return 0;
+    RingDesc *d = (RingDesc *)ring_desc;
+
+    uint64_t w_head =
+        atomic_load_explicit(&d->w_head, memory_order_acquire);
+
+    if (w_head == 0)
+        return 0;
+
+    uint32_t idx = (uint32_t)((w_head - 1) & (d->slot_count - 1));
+    uint8_t *slot =
+        (uint8_t *)d + d->base_offset + ((uint64_t)idx * d->slot_size);
+
+    SlotHeader *hdr = (SlotHeader *)slot;
+    return hdr->timestamp_ns;
+}

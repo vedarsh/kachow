@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <stdatomic.h>
+#include <stddef.h>
 
 /* --------------------------------------------------------------------------
  * Constants & Configuration
@@ -156,5 +157,7 @@ int usrl_core_init(const char *path,
 void *usrl_core_map(const char *path, uint64_t size);
 
 TopicEntry *usrl_get_topic(void *base, const char *name);
+
+void usrl_core_unmap(void *base, size_t size);
 
 #endif /* USRL_CORE_H */

@@ -143,5 +143,25 @@ int usrl_sub_next(UsrlSubscriber *s,
                   uint8_t *out_buf,
                   uint32_t buf_len,
                   uint16_t *out_pub_id);
+/* =============================================================================
+ * REAL HEALTH TELEMETRY ACCESSORS (RING)
+ * ============================================================================= */
+
+/* -------- MWMR RING TELEMETRY -------- */
+
+/* Total number of published messages (write head) */
+uint64_t usrl_mwmr_total_published(void *ring_desc);
+
+/* Timestamp (ns) of most recent published slot */
+uint64_t usrl_mwmr_last_publish_ns(void *ring_desc);
+
+
+/* -------- SWMR RING TELEMETRY -------- */
+
+/* Total number of published messages (write head) */
+uint64_t usrl_swmr_total_published(void *ring_desc);
+
+/* Timestamp (ns) of most recent published slot */
+uint64_t usrl_swmr_last_publish_ns(void *ring_desc);
 
 #endif /* USRL_RING_H */
