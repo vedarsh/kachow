@@ -1,6 +1,9 @@
 /**
  * @file usrl_api.c
- * @brief Unified Facade Implementation (Spaceflight-Certified).
+ * @brief Unified Facade Implementation (Production Ready).
+ * 
+ * Implements the high-level C API for USRL, bridging the Core Ring buffer
+ * with user-facing features like Health Monitoring, Rate Limiting, and Logging.
  */
 
 #define _GNU_SOURCE
@@ -18,8 +21,7 @@
 #include <time.h>
 #include <sys/mman.h>
 
-/* Accessor for Lag Calculation (from ring_swmr.c) */
-// Ensure this matches the signature in ring_swmr.c
+/* Accessor for Lag Calculation (from ring_swmr.c / ring_mwmr.c) */
 uint64_t usrl_swmr_total_published(void *ring_desc);
 
 static uint32_t g_pub_id_seq = 1;
@@ -34,13 +36,18 @@ struct usrl_ctx {
 
 struct usrl_pub {
     usrl_ctx_t *ctx;
-    UsrlPublisher core;
+    UsrlPublisher core;         /* SWMR core handle */
+    UsrlMwmrPublisher core_mw;  /* MWMR core handle */
     PublishQuota quota;
     bool block_on_full;
     bool use_limiter;
+    bool is_mwmr;
     char topic[64];
     void *shm_base;
     size_t map_size; 
+    
+    /* Local stats for API-layer drops (Rate Limiter) */
+    uint64_t local_drops; 
 };
 
 struct usrl_sub {
@@ -50,7 +57,7 @@ struct usrl_sub {
     void *shm_base;
     size_t map_size; 
     
-    /* Local Stats */
+    /* Local stats for API-layer tracking */
     uint64_t local_ops;
     uint64_t local_skips;
 };
@@ -63,13 +70,10 @@ usrl_ctx_t *usrl_init(const usrl_sys_config_t *config)
 {
     if (!config) return NULL;
     usrl_logging_init(config->log_file_path, config->log_level);
-    
     usrl_ctx_t *ctx = calloc(1, sizeof(usrl_ctx_t));
     if (!ctx) return NULL;
-    
     if (config->app_name) strncpy(ctx->name, config->app_name, 63);
     else strcpy(ctx->name, "usrl_app");
-    
     USRL_INFO("API", "USRL System Initialized: %s", ctx->name);
     return ctx;
 }
@@ -88,15 +92,11 @@ void usrl_shutdown(usrl_ctx_t *ctx)
 
 usrl_pub_t *usrl_pub_create(usrl_ctx_t *ctx, const usrl_pub_config_t *config)
 {
-    // STRICT VALIDATION
-    if (!ctx || !config || !config->topic) {
-        USRL_ERROR("API", "usrl_pub_create: Invalid arguments");
-        return NULL;
-    }
+    if (!ctx || !config || !config->topic) return NULL;
 
     uint32_t sc = (config->slot_count > 0) ? config->slot_count : 4096;
     uint32_t ss = (config->slot_size > 0) ? config->slot_size : 1024;
-    size_t ring_size = (size_t)sc * ss + (1024 * 1024);
+    size_t ring_size = (size_t)sc * ss + (1024 * 1024); // +1MB for headers
     char shm_path[128];
     snprintf(shm_path, sizeof(shm_path), "/usrl-%s", config->topic);
 
@@ -106,8 +106,9 @@ usrl_pub_t *usrl_pub_create(usrl_ctx_t *ctx, const usrl_pub_config_t *config)
     tcfg.slot_size = ss;
     tcfg.type = (config->ring_type == USRL_RING_MWMR) ? USRL_RING_TYPE_MWMR : USRL_RING_TYPE_SWMR;
 
+    /* Init Core if needed (Auto-create SHM) */
     if (usrl_core_init(shm_path, ring_size, &tcfg, 1) != 0) {
-        USRL_ERROR("API", "Failed to init core ring: %s", config->topic);
+        USRL_ERROR("API", "Failed to init core ring (or exists): %s", config->topic);
     }
 
     void *base = usrl_core_map(shm_path, ring_size);
@@ -121,6 +122,7 @@ usrl_pub_t *usrl_pub_create(usrl_ctx_t *ctx, const usrl_pub_config_t *config)
     pub->shm_base = base;
     pub->map_size = ring_size;
     pub->block_on_full = config->block_on_full;
+    pub->is_mwmr = (config->ring_type == USRL_RING_MWMR);
     strncpy(pub->topic, config->topic, 63);
 
     if (config->rate_limit_hz > 0) {
@@ -129,9 +131,13 @@ usrl_pub_t *usrl_pub_create(usrl_ctx_t *ctx, const usrl_pub_config_t *config)
     }
 
     uint32_t my_id = __sync_fetch_and_add(&g_pub_id_seq, 1);
-    usrl_pub_init(&pub->core, base, config->topic, my_id);
+    
+    if (pub->is_mwmr) {
+        usrl_mwmr_pub_init(&pub->core_mw, base, config->topic, my_id);
+    } else {
+        usrl_pub_init(&pub->core, base, config->topic, my_id);
+    }
 
-    USRL_INFO("API", "Pub Ready: %s [ID=%u]", config->topic, my_id);
     return pub;
 }
 
@@ -139,36 +145,72 @@ int usrl_pub_send(usrl_pub_t *pub, const void *data, uint32_t len)
 {
     if (!pub || !data) return -1;
 
+    /* Rate Limiting Logic */
     if (pub->use_limiter) {
         if (usrl_quota_check(&pub->quota)) {
             if (pub->block_on_full) {
                 usleep(usrl_backoff_exponential(1));
             } else {
-                return -1; // Drop due to rate limit
+                pub->local_drops++; /* Track Drop */
+                return -1; 
             }
         }
     }
 
-    int res = usrl_pub_publish(&pub->core, data, len);
-    while (res != 0 && pub->block_on_full) {
-        usleep(1);
+    /* Publish (SWMR or MWMR) */
+    int res;
+    if (pub->is_mwmr) {
+        res = usrl_mwmr_pub_publish(&pub->core_mw, data, len);
+        
+        /* Spin/Block if requested and ring full/busy */
+        while ((res == USRL_RING_FULL || res == USRL_RING_TIMEOUT) && pub->block_on_full) {
+            usleep(1);
+            res = usrl_mwmr_pub_publish(&pub->core_mw, data, len);
+        }
+    } else {
         res = usrl_pub_publish(&pub->core, data, len);
+        
+        while (res == USRL_RING_FULL && pub->block_on_full) {
+            usleep(1);
+            res = usrl_pub_publish(&pub->core, data, len);
+        }
     }
-    return res;
+    
+    /* Map Ring Error Codes to API Error Codes */
+    if (res == USRL_RING_OK) return 0;
+    
+    /* If we failed (and didn't block), record drop */
+    if (res != USRL_RING_OK) {
+        // Only count as drop if not a usage error? 
+        // Ring Full = Drop.
+        if (res == USRL_RING_FULL) pub->local_drops++;
+        return -1;
+    }
+    
+    return 0;
 }
 
 void usrl_pub_get_health(usrl_pub_t *pub, usrl_health_t *out)
 {
     if (!pub || !out) return;
+    
     RingHealth *rh = usrl_health_get(pub->shm_base, pub->topic);
+    
     if (rh) {
         out->operations = rh->pub_health.total_published;
-        out->errors     = rh->pub_health.total_dropped;
         out->rate_hz    = rh->pub_health.publish_rate_hz;
+        
+        /* Combine SHM stats (dropped inside ring?) + API stats (rate limited) */
+        /* Currently Core doesn't track ring-internal drops, so we rely on local */
+        out->errors     = pub->local_drops;
+        
         out->lag        = 0;
         out->healthy    = (out->errors == 0);
-        free(rh);
-    } else memset(out, 0, sizeof(*out));
+        usrl_health_free(rh); 
+    } else {
+        memset(out, 0, sizeof(*out));
+        out->errors = pub->local_drops;
+    }
 }
 
 void usrl_pub_destroy(usrl_pub_t *pub)
@@ -186,20 +228,14 @@ void usrl_pub_destroy(usrl_pub_t *pub)
 
 usrl_sub_t *usrl_sub_create(usrl_ctx_t *ctx, const char *topic)
 {
-    if (!ctx || !topic) {
-        USRL_ERROR("API", "usrl_sub_create: Invalid args");
-        return NULL;
-    }
+    if (!ctx || !topic) return NULL;
     char shm_path[128];
     snprintf(shm_path, 128, "/usrl-%s", topic);
     
-    // Use a fixed safe map size. In prod, read header first to get exact size.
-    size_t map_size = 32 * 1024 * 1024;
+    /* Default Map Size (Should read from header really, but 32MB covers most cases) */
+    size_t map_size = 32 * 1024 * 1024; 
     void *base = usrl_core_map(shm_path, map_size);
-    if (!base) {
-        USRL_ERROR("API", "Sub map fail: %s", topic);
-        return NULL;
-    }
+    if (!base) return NULL;
 
     usrl_sub_t *sub = calloc(1, sizeof(usrl_sub_t));
     sub->ctx = ctx;
@@ -217,13 +253,22 @@ int usrl_sub_recv(usrl_sub_t *sub, void *buffer, uint32_t max_len)
     
     int ret = usrl_sub_next(&sub->core, buffer, max_len, NULL);
     
-    // Local stats tracking
-    if (ret > 0) {
-        sub->local_ops++;
-    } else if (ret < 0) {
-        sub->local_skips++;
+    /* Handle standardized ring codes */
+    if (ret == USRL_RING_NO_DATA) {
+        return -11; /* EAGAIN - No Message */
     }
     
+    if (ret == USRL_RING_TRUNC) {
+        sub->local_skips++; /* Truncation is data loss/error */
+        return -1; 
+    }
+    
+    if (ret == USRL_RING_ERROR) {
+        return -1;
+    }
+    
+    /* Success (ret >= 0, payload size) */
+    sub->local_ops++;
     return ret;
 }
 
@@ -232,12 +277,14 @@ void usrl_sub_get_health(usrl_sub_t *sub, usrl_health_t *out)
     if (!sub || !out) return;
 
     out->operations = sub->local_ops;
-    out->errors     = sub->local_skips;
+    
+    /* Errors = Local Skips (API errors) + Core Skips (Ring jumps) */
+    out->errors     = sub->local_skips + sub->core.skipped_count;
+    
     out->rate_hz    = 0; 
 
-    // Lag Calculation
+    /* Calculate Lag */
     if (sub->core.desc) {
-        // We need to fetch the writer's head position from shared memory
         uint64_t w_head = usrl_swmr_total_published(sub->core.desc);
         uint64_t my_seq = sub->core.last_seq;
         
@@ -250,7 +297,8 @@ void usrl_sub_get_health(usrl_sub_t *sub, usrl_health_t *out)
         out->lag = 0;
     }
     
-    out->healthy = (out->lag < 4096); 
+    /* Simple health heuristic */
+    out->healthy = (out->lag < 100 && out->errors == 0); 
 }
 
 void usrl_sub_destroy(usrl_sub_t *sub)

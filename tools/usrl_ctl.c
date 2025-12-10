@@ -10,6 +10,7 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <time.h>
+#include <stdatomic.h>
 
 #define SHM_PATH "/usrl_core"
 
@@ -21,9 +22,9 @@
 static int is_printable(const uint8_t *buf, uint32_t len) {
     if (len == 0) return 0;
     // Check for null terminator near end if it claims to be C-string
-    int null_found = 0;
     for (uint32_t i = 0; i < len; i++) {
-        if (buf[i] == 0) { null_found = 1; break; }
+        if (buf[i] == 0 && i == len - 1) return 1; // Null at end is OK
+        if (buf[i] == 0 && i < len - 1) return 0; // Null in middle = binary
         if (!isprint(buf[i]) && buf[i] != '\n' && buf[i] != '\r' && buf[i] != '\t') {
             return 0; // Binary garbage
         }
@@ -41,6 +42,9 @@ static void print_hexdump(const uint8_t *buf, uint32_t len) {
 
 /* Smart Map: Reads header first to find total size, then maps everything */
 static void* map_system(void) {
+    /* Note: In real USRL apps, usrl_core_map handles this. 
+       We do it manually here for the tool to avoid linking full API if desired,
+       or to inspect raw SHM. */
     int fd = shm_open(SHM_PATH, O_RDWR, 0666);
     if (fd < 0) {
         perror("shm_open");
@@ -96,7 +100,8 @@ static void do_list(void *base) {
         TopicEntry *t = &topics[i];
         RingDesc *r = (RingDesc*)((uint8_t*)base + t->ring_desc_offset);
 
-        uint64_t head = atomic_load(&r->w_head);
+        // Correct atomic load
+        uint64_t head = atomic_load_explicit(&r->w_head, memory_order_relaxed);
 
         printf("%-20s | %-5s | %-8u | %-8u | %-12lu\n",
                t->name,
@@ -116,7 +121,7 @@ static void do_info(void *base, const char *topic_name) {
     }
 
     RingDesc *r = (RingDesc*)((uint8_t*)base + t->ring_desc_offset);
-    uint64_t head = atomic_load(&r->w_head);
+    uint64_t head = atomic_load_explicit(&r->w_head, memory_order_relaxed);
 
     printf("\nTopic: %s\n", t->name);
     printf("Type:  %s\n", (t->type == USRL_RING_TYPE_SWMR) ? "SWMR" : "MWMR");
@@ -139,33 +144,50 @@ static void do_tail(void *base, const char *topic_name) {
     printf("Tailing topic '%s' (Ctrl+C to stop)...\n", topic_name);
 
     UsrlSubscriber sub;
-    if (t->type == USRL_RING_TYPE_SWMR) {
-        usrl_sub_init(&sub, base, topic_name);
-    } else {
-        usrl_mwmr_sub_init(&sub, base, topic_name);
-    }
+    
+    // FIX: Use unified init for both SWMR and MWMR
+    usrl_sub_init(&sub, base, topic_name);
 
     // Set last_seq to head so we only see NEW messages
     RingDesc *d = sub.desc;
-    sub.last_seq = atomic_load(&d->w_head);
+    sub.last_seq = atomic_load_explicit(&d->w_head, memory_order_acquire);
 
     uint8_t *buf = malloc(d->slot_size);
+    if (!buf) {
+        fprintf(stderr, "OOM\n");
+        return;
+    }
+    
     uint16_t pid;
 
     while (1) {
         int len = usrl_sub_next(&sub, buf, d->slot_size, &pid);
-        if (len > 0) {
+        
+        if (len >= 0) { // Success (could be 0 bytes)
             printf("[%u] ", pid);
-            if (is_printable(buf, len)) {
-                printf("%s\n", (char*)buf);
+            if (len == 0) {
+                printf("(Empty Message)\n");
+            } else if (is_printable(buf, len)) {
+                // Ensure null termination for printf if not present
+                if (buf[len-1] != 0) {
+                    printf("%.*s\n", len, (char*)buf);
+                } else {
+                    printf("%s\n", (char*)buf);
+                }
             } else {
                 printf("(%d bytes) ", len);
                 print_hexdump(buf, (len > 16) ? 16 : len);
             }
+        } else if (len == USRL_RING_NO_DATA) {
+            usleep(1000); // 1ms polling if no data
         } else {
-            usleep(1000); // 1ms polling
+            // Error (Truncated, etc)
+            fprintf(stderr, "Error reading: %d\n", len);
+            usleep(1000);
         }
     }
+    
+    free(buf);
 }
 
 /* --------------------------------------------------------------------------
